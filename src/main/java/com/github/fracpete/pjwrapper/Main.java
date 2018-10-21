@@ -47,6 +47,9 @@ public class Main {
     /** the name of the method. */
     public String name;
 
+    /** whether it is the constructor. */
+    public boolean constructor;
+
     /** the signature. */
     public String signature;
 
@@ -56,7 +59,7 @@ public class Main {
      * @return		the description
      */
     public String toString() {
-      return name + ": " + signature;
+      return name + ": " + signature + (constructor ? " (constructor)" : "");
     }
   }
 
@@ -183,7 +186,7 @@ public class Main {
    * @param classname	the class to process
    * @return		the parsed output, null if failed to process
    */
-  protected List<MethodDescriptor> getSignatures(String classname) {
+  protected List<MethodDescriptor> parseSignatures(String classname) {
     List<MethodDescriptor>	result;
     String[]			cmd;
     ProcessBuilder 		builder;
@@ -243,10 +246,13 @@ public class Main {
       tmp = tmp.replace("final ", "");
       tmp = tmp.replace("static ", "");
       tmp = tmp.replaceAll("\\(.*", "").trim();
-      if (!tmp.contains(" "))
-        method.name = tmp;  // constructor
-      else
+      if (!tmp.contains(" ")) {
+        method.name        = tmp;
+        method.constructor = true;
+      }
+      else {
         method.name = tmp.split(" ")[1];
+      }
 
       tmp = lines.get(i+1);
       tmp = tmp.replace("descriptor: ", "");
@@ -274,13 +280,14 @@ public class Main {
 
       for (String classname: m_Classes) {
 	System.out.println("Processing: " + classname);
-	methods = getSignatures(classname);
+	methods = parseSignatures(classname);
 	if (methods == null)
 	  continue;
+
+        // TODO
 	System.out.println(methods);
       }
     }
-    // TODO
 
     return result;
   }
