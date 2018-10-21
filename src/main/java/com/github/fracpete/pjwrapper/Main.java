@@ -20,7 +20,9 @@
 
 package com.github.fracpete.pjwrapper;
 
-import com.github.fracpete.processoutput4j.output.CollectingProcessOutput;
+import com.github.fracpete.pjwrapper.core.ClassDescriptor;
+import com.github.fracpete.pjwrapper.core.Generator;
+import com.github.fracpete.pjwrapper.core.Parser;
 import net.sourceforge.argparse4j.ArgumentParsers;
 import net.sourceforge.argparse4j.impl.Arguments;
 import net.sourceforge.argparse4j.inf.ArgumentParser;
@@ -31,7 +33,6 @@ import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileWriter;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.regex.Pattern;
 
@@ -41,123 +42,6 @@ import java.util.regex.Pattern;
  * @author FracPete (fracpete at gmail dot com)
  */
 public class Main {
-
-  /**
-   * Container for signature details.
-   */
-  public class SignatureDescriptor {
-
-    /** the raw signature. */
-    public String raw;
-
-    /** the argument types. */
-    public List<String> argTypes = new ArrayList<>();
-
-    /** the return type. */
-    public String returnType;
-
-    /**
-     * Returns just the raw signature.
-     *
-     * @return        the signature
-     */
-    public String toString() {
-      return "(" + argTypes + ")" + (returnType == null ? "V" : returnType);
-    }
-  }
-
-  /**
-   * Container for the parsed javap output.
-   */
-  public class MethodDescriptor {
-
-    /** the name of the method. */
-    public String name;
-
-    /** whether it is the constructor. */
-    public boolean isConstructor;
-
-    /** whether the method is static. */
-    public boolean isStatic;
-
-    /** the signature. */
-    public SignatureDescriptor signature;
-
-    /** whether the method is part of a property get/set pair. */
-    public boolean isProperty;
-
-    /**
-     * Returns a string representation of the container.
-     *
-     * @return		the description
-     */
-    public String toString() {
-      return name + ": " + signature + (isConstructor ? " (constructor)" : "") + (isStatic ? " [static]" : "");
-    }
-  }
-
-  /**
-   * Container for the parsed javap output.
-   */
-  public class PropertyDescriptor {
-
-    /** the name of the proeprty. */
-    public String name;
-
-    /** the read method. */
-    public MethodDescriptor read;
-
-    /** the write method. */
-    public MethodDescriptor write;
-
-    /**
-     * Returns a short description of the property.
-     *
-     * @return		the description
-     */
-    public String toString() {
-      return name + ": read(" + read.name + "), write(" + write.name + ")";
-    }
-  }
-
-  /**
-   * Container for parsed javap ouput.
-   */
-  public class ClassDescriptor {
-
-    /** the name of the class. */
-    public String name;
-
-    /** the methods. */
-    public List<MethodDescriptor> methods = new ArrayList<>();
-
-    /** the properties. */
-    public List<PropertyDescriptor> properties = new ArrayList<>();
-
-    /**
-     * Returns a description of the class.
-     *
-     * @return    the description
-     */
-    public String toString() {
-      StringBuilder result;
-
-      result = new StringBuilder();
-      result.append(name).append("\n");
-      if (methods.size() > 0) {
-        result.append("  Methods:\n");
-	for (MethodDescriptor method : methods)
-	  result.append("    ").append(method.toString()).append("\n");
-      }
-      if (properties.size() > 0) {
-	result.append("  Properties:\n");
-	for (PropertyDescriptor property : properties)
-	  result.append("    ").append(property.toString()).append("\n");
-      }
-
-      return result.toString();
-    }
-  }
 
   /** the java home directory to use. */
   protected File m_JavaHome;
@@ -388,170 +272,10 @@ public class Main {
    * @return		the parsed output, null if failed to process
    */
   protected ClassDescriptor parseClass(String classname) {
-    ClassDescriptor		result;
-    String[]			cmd;
-    ProcessBuilder 		builder;
-    CollectingProcessOutput 	output;
-    List<String>		lines;
-    int				i;
-    SignatureDescriptor		signature;
-    MethodDescriptor		method;
-    String			tmp;
-    StringBuilder 		params;
-    PropertyDescriptor		property;
-    int				n;
+    Parser 	parser;
 
-    cmd = new String[]{
-      m_Javap.getAbsolutePath(),
-      "-s",
-      "-public",
-      "-cp",
-      getClassPath(),
-      classname};
-    builder = new ProcessBuilder();
-    builder.command(cmd);
-    output = new CollectingProcessOutput();
-
-    try {
-      output.monitor(builder);
-    }
-    catch (Exception e) {
-      System.err.println("Failed to execute command: " + builder.command());
-      e.printStackTrace();
-      return null;
-    }
-
-    result = new ClassDescriptor();
-    result.name = classname;
-    lines  = new ArrayList<>(Arrays.asList(output.getStdOut().split("\n")));
-
-    // clean up
-    i = 0;
-    while (i < lines.size()) {
-      if (lines.get(i).contains("Compiled from")) {
-        lines.remove(i);
-        continue;
-      }
-      if (lines.get(i).contains("{") || lines.get(i).contains("}")) {
-        lines.remove(i);
-        continue;
-      }
-      if (lines.get(i).trim().isEmpty()) {
-        lines.remove(i);
-        continue;
-      }
-      i++;
-    }
-
-    // create descriptors
-    for (i = 0; i < lines.size(); i += 2) {
-      method = new MethodDescriptor();
-
-      // name
-      tmp = lines.get(i);
-      method.isStatic = tmp.contains(" static ");
-      tmp = tmp.replace("public ", "");
-      tmp = tmp.replace("final ", "");
-      tmp = tmp.replace("static ", "");
-      tmp = tmp.replaceAll("\\(.*", "").trim();
-      if (!tmp.contains(" ")) {
-        method.name        = tmp;
-        method.isConstructor = true;
-      }
-      else {
-        method.name = tmp.split(" ")[1];
-      }
-
-      // signature
-      tmp = lines.get(i+1);
-      tmp = tmp.replace("descriptor: ", "");
-      signature = new SignatureDescriptor();
-      signature.raw = tmp.trim();
-      // arguments
-      params = new StringBuilder(signature.raw.substring(1, signature.raw.indexOf(')')));
-      n = 0;
-      while (params.length() > 0) {
-        if (params.charAt(n) == '[') {
-          n++;
-          continue;
-        }
-        switch (params.charAt(n)) {
-          case 'L':  // classname
-	    params.deleteCharAt(n);
-            signature.argTypes.add(params.substring(0, params.indexOf(";")));
-            params.delete(0, params.indexOf(";") + 1);
-            n = 0;
-            break;
-          default:
-            signature.argTypes.add(params.substring(0, 1));
-            params.deleteCharAt(0);
-            n = 0;
-            break;
-        }
-      }
-      // return type
-      signature.returnType = signature.raw.replaceAll(".*\\)", "");
-      if (signature.returnType.equals("V")) {
-	signature.returnType = null;
-      }
-      else if (signature.returnType.contains(";")) {
-	tmp = signature.returnType;
-        if (signature.returnType.indexOf('L') > 0)
-	  signature.returnType = tmp.substring(0, tmp.indexOf('L')) + tmp.substring(tmp.indexOf('L') + 1, tmp.length() - 1);
-	else
-	  signature.returnType = tmp.substring(tmp.indexOf('L') + 1, tmp.length() - 1);
-      }
-      method.signature = signature;
-
-      if ((m_SkipPattern != null) && m_SkipPattern.matcher(method.name).matches())
-        continue;
-      result.methods.add(method);
-    }
-
-    // determine properties
-    for (MethodDescriptor m: result.methods) {
-      if (!m.name.startsWith("set") || !m.signature.raw.endsWith("V"))
-        continue;
-      tmp = "g" + m.name.substring(1);
-      for (MethodDescriptor m2: result.methods) {
-        if (m2.name.equals(tmp)) {
-          property = new PropertyDescriptor();
-          property.name  = m.name.substring(3, 4).toLowerCase() + m.name.substring(4);
-          property.write = m;
-          property.read  = m2;
-          m.isProperty   = true;
-          m2.isProperty  = true;
-          result.properties.add(property);
-	}
-      }
-    }
-
-    return result;
-  }
-
-  /**
-   * Turns a Java camel case into a Python lower_underscore name.
-   *
-   * @param javaname	the name to convert
-   * @return		the converted name
-   */
-  protected String pythonName(String javaname) {
-    StringBuilder	result;
-    char		c;
-    int			i;
-
-    result = new StringBuilder();
-
-    for (i = 0; i < javaname.length(); i++) {
-      c = javaname.charAt(i);
-      if ((c >= 'A') && (c <= 'Z')) {
-        result.append("_");
-        c = Character.toLowerCase(c);
-      }
-      result.append(c);
-    }
-
-    return result.toString();
+    parser = new Parser(m_Javap, m_ClassPath, m_SkipPattern);
+    return parser.parse(classname);
   }
 
   /**
@@ -562,72 +286,10 @@ public class Main {
    * @return		null if successful, otherwise error message
    */
   protected String generateCode(ClassDescriptor cls, StringBuilder code) {
-    // imports
-    if (m_PWW && (code.length() == 0)) {
-      code.append("from weka.core.classes import JavaObject\n");
-      code.append("\n");
-      code.append("\n");
-    }
+    Generator	generator;
 
-    // class
-    code.append("class ").append(cls.name.replaceAll(".*\\.", ""));
-    if (m_PWW)
-      code.append("(JavaObject):\n");
-    else
-      code.append("(Object):\n");
-
-    // comments
-    code.append("    \"\"\"\n");
-    code.append("    classname: " + cls.name + "\n");
-    code.append("    classpath: " + m_ClassPath + "\n");
-    code.append("    \"\"\"\n");
-    code.append("    \n");
-
-    // constructor
-    if (m_PWW) {
-      code.append("    def __init__(self, jobject):\n");
-      code.append("        super(JavaObject, jobject)\n");
-      code.append("        \n");
-    }
-    else {
-      code.append("    def __init__(self, jobject):\n");
-      code.append("        self.jobject = jobject\n");
-      code.append("        \n");
-    }
-
-    // iterate methods
-    for (MethodDescriptor method: cls.methods) {
-      if (method.isConstructor || method.isProperty || method.isStatic)
-        continue;
-
-      code.append("    def ").append(pythonName(method.name)).append("(self):\n");  // TODO parameters
-      code.append("        \"\"\"\n");
-      code.append("        method: ").append(method.name).append(method.signature).append("\n");
-      code.append("        \"\"\"\n");
-      code.append("        pass\n");  // TODO set
-      code.append("        \n");
-    }
-
-    // iterate properties
-    for (PropertyDescriptor property: cls.properties) {
-      code.append("    @property\n");
-      code.append("    def ").append(pythonName(property.name)).append("(self):\n");
-      code.append("        \"\"\"\n");
-      code.append("        method: ").append(property.read.name).append(property.read.signature).append("\n");
-      code.append("        \"\"\"\n");
-      code.append("        return None\n");  // TODO return
-      code.append("        \n");
-
-      code.append("    @").append(pythonName(property.name)).append(".setter\n");
-      code.append("    def ").append(pythonName(property.name)).append("(self, value):\n");
-      code.append("        \"\"\"\n");
-      code.append("        method: ").append(property.write.name).append(property.write.signature).append("\n");
-      code.append("        \"\"\"\n");
-      code.append("        pass\n");  // TODO set
-      code.append("        \n");
-    }
-
-    return null;
+    generator = new Generator(m_PWW);
+    return generator.generate(cls, code);
   }
 
   /**
