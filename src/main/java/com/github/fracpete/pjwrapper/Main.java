@@ -43,6 +43,30 @@ import java.util.regex.Pattern;
 public class Main {
 
   /**
+   * Container for signature details.
+   */
+  public class SignatureDescriptor {
+
+    /** the raw signature. */
+    public String raw;
+
+    /** the argument types. */
+    public List<String> argTypes = new ArrayList<>();
+
+    /** the return type. */
+    public String returnType;
+
+    /**
+     * Returns just the raw signature.
+     *
+     * @return        the signature
+     */
+    public String toString() {
+      return "(" + argTypes + ")" + (returnType == null ? "V" : returnType);
+    }
+  }
+
+  /**
    * Container for the parsed javap output.
    */
   public class MethodDescriptor {
@@ -57,13 +81,7 @@ public class Main {
     public boolean isStatic;
 
     /** the signature. */
-    public String signature;
-
-    /** whether it has arguments. */
-    public boolean hasArgs;
-
-    /** whether it has a return value. */
-    public boolean hasReturn;
+    public SignatureDescriptor signature;
 
     /** whether the method is part of a property get/set pair. */
     public boolean isProperty;
@@ -376,9 +394,12 @@ public class Main {
     CollectingProcessOutput 	output;
     List<String>		lines;
     int				i;
+    SignatureDescriptor		signature;
     MethodDescriptor		method;
     String			tmp;
+    StringBuilder 		params;
     PropertyDescriptor		property;
+    int				n;
 
     cmd = new String[]{
       m_Javap.getAbsolutePath(),
@@ -444,9 +465,43 @@ public class Main {
       // signature
       tmp = lines.get(i+1);
       tmp = tmp.replace("descriptor: ", "");
-      method.signature = tmp.trim();
-      method.hasArgs   = !method.signature.contains("()");
-      method.hasReturn = !method.signature.endsWith("V");
+      signature = new SignatureDescriptor();
+      signature.raw = tmp.trim();
+      // arguments
+      params = new StringBuilder(signature.raw.substring(1, signature.raw.indexOf(')')));
+      n = 0;
+      while (params.length() > 0) {
+        if (params.charAt(n) == '[') {
+          n++;
+          continue;
+        }
+        switch (params.charAt(n)) {
+          case 'L':  // classname
+	    params.deleteCharAt(n);
+            signature.argTypes.add(params.substring(0, params.indexOf(";")));
+            params.delete(0, params.indexOf(";") + 1);
+            n = 0;
+            break;
+          default:
+            signature.argTypes.add(params.substring(0, 1));
+            params.deleteCharAt(0);
+            n = 0;
+            break;
+        }
+      }
+      // return type
+      signature.returnType = signature.raw.replaceAll(".*\\)", "");
+      if (signature.returnType.equals("V")) {
+	signature.returnType = null;
+      }
+      else if (signature.returnType.contains(";")) {
+	tmp = signature.returnType;
+        if (signature.returnType.indexOf('L') > 0)
+	  signature.returnType = tmp.substring(0, tmp.indexOf('L')) + tmp.substring(tmp.indexOf('L') + 1, tmp.length() - 1);
+	else
+	  signature.returnType = tmp.substring(tmp.indexOf('L') + 1, tmp.length() - 1);
+      }
+      method.signature = signature;
 
       if ((m_SkipPattern != null) && m_SkipPattern.matcher(method.name).matches())
         continue;
@@ -455,7 +510,7 @@ public class Main {
 
     // determine properties
     for (MethodDescriptor m: result.methods) {
-      if (!m.name.startsWith("set") || !m.signature.endsWith("V"))
+      if (!m.name.startsWith("set") || !m.signature.raw.endsWith("V"))
         continue;
       tmp = "g" + m.name.substring(1);
       for (MethodDescriptor m2: result.methods) {
