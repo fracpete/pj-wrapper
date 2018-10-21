@@ -31,6 +31,7 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.regex.Pattern;
 
 /**
  * Generates Python 3 wrapper code for a Java class.
@@ -50,8 +51,17 @@ public class Main {
     /** whether it is the constructor. */
     public boolean constructor;
 
+    /** whether the method is static. */
+    public boolean isStatic;
+
     /** the signature. */
     public String signature;
+
+    /** whether it has arguments. */
+    public boolean hasArgs;
+
+    /** whether it has a return value. */
+    public boolean hasReturn;
 
     /**
      * Returns a string representation of the container.
@@ -59,7 +69,70 @@ public class Main {
      * @return		the description
      */
     public String toString() {
-      return name + ": " + signature + (constructor ? " (constructor)" : "");
+      return name + ": " + signature + (constructor ? " (constructor)" : "") + (isStatic ? " [static]" : "");
+    }
+  }
+
+  /**
+   * Container for the parsed javap output.
+   */
+  public class PropertyDescriptor {
+
+    /** the name of the proeprty. */
+    public String name;
+
+    /** the read method. */
+    public String read;
+
+    /** the write method. */
+    public String write;
+
+    /**
+     * Returns a short description of the property.
+     *
+     * @return		the description
+     */
+    public String toString() {
+      return name + ": read(" + read + "), write(" + write + ")";
+    }
+  }
+
+  /**
+   * Container for parsed javap ouput.
+   */
+  public class ClassDescriptor {
+
+    /** the name of the class. */
+    public String name;
+
+    /** the methods. */
+    public List<MethodDescriptor> methods = new ArrayList<>();
+
+    /** the properties. */
+    public List<PropertyDescriptor> properties = new ArrayList<>();
+
+    /**
+     * Returns a description of the class.
+     *
+     * @return    the description
+     */
+    public String toString() {
+      StringBuilder result;
+
+      result = new StringBuilder();
+      result.append(name).append("\n");
+      if (methods.size() > 0) {
+        result.append("  Methods:\n");
+	for (MethodDescriptor method : methods)
+	  result.append("    ").append(method.toString()).append("\n");
+      }
+      if (properties.size() > 0) {
+	result.append("  Properties:\n");
+	for (PropertyDescriptor property : properties)
+	  result.append("    ").append(property.toString()).append("\n");
+      }
+
+      return result.toString();
     }
   }
 
@@ -78,11 +151,22 @@ public class Main {
   /** the Python output file. */
   protected File m_OutputFile;
 
+  /** the regular expression for skipping method names. */
+  protected String m_Skip;
+
+  /** the pattern for matching method names to skip. */
+  protected Pattern m_SkipPattern;
+
+  /**
+   * Initalizes the object.
+   */
   public Main() {
-    m_JavaHome   = (System.getenv("JAVA_HOME") != null ? new File(System.getenv("JAVA_HOME")) : null);
-    m_Classes    = new ArrayList<>();
-    m_ClassPath  = null;
-    m_OutputFile = null;
+    m_JavaHome    = (System.getenv("JAVA_HOME") != null ? new File(System.getenv("JAVA_HOME")) : null);
+    m_Classes     = new ArrayList<>();
+    m_ClassPath   = null;
+    m_OutputFile  = null;
+    m_Skip        = null;
+    m_SkipPattern = null;
   }
 
   /**
@@ -158,6 +242,24 @@ public class Main {
   }
 
   /**
+   * Sets the regular expression for methods to skip.
+   *
+   * @param value	the expression
+   */
+  public void setSkip(String value) {
+    m_Skip = value;
+  }
+
+  /**
+   * Returns the regular expression for methods to skip.
+   *
+   * @return		the expression
+   */
+  public String getSkip() {
+    return m_Skip;
+  }
+
+  /**
    * Performs some checks.
    *
    * @return		null if successful, otherwise error message
@@ -177,6 +279,16 @@ public class Main {
     if (m_Classes.size() == 0)
       return "No classnames provided!";
 
+    m_SkipPattern = null;
+    if (m_Skip != null) {
+      try {
+	m_SkipPattern = Pattern.compile(m_Skip);
+      }
+      catch (Exception e) {
+	return "Invalid regular expression for skipping method names: " + m_Skip;
+      }
+    }
+
     return null;
   }
 
@@ -186,8 +298,8 @@ public class Main {
    * @param classname	the class to process
    * @return		the parsed output, null if failed to process
    */
-  protected List<MethodDescriptor> parseSignatures(String classname) {
-    List<MethodDescriptor>	result;
+  protected ClassDescriptor parseSignatures(String classname) {
+    ClassDescriptor		result;
     String[]			cmd;
     ProcessBuilder 		builder;
     CollectingProcessOutput 	output;
@@ -195,6 +307,7 @@ public class Main {
     int				i;
     MethodDescriptor		method;
     String			tmp;
+    PropertyDescriptor		property;
 
     cmd = new String[]{
       m_Javap.getAbsolutePath(),
@@ -216,7 +329,8 @@ public class Main {
       return null;
     }
 
-    result = new ArrayList<>();
+    result = new ClassDescriptor();
+    result.name = classname;
     lines  = new ArrayList<>(Arrays.asList(output.getStdOut().split("\n")));
 
     // clean up
@@ -241,7 +355,9 @@ public class Main {
     for (i = 0; i < lines.size(); i += 2) {
       method = new MethodDescriptor();
 
+      // name
       tmp = lines.get(i);
+      method.isStatic = tmp.contains(" static ");
       tmp = tmp.replace("public ", "");
       tmp = tmp.replace("final ", "");
       tmp = tmp.replace("static ", "");
@@ -254,10 +370,32 @@ public class Main {
         method.name = tmp.split(" ")[1];
       }
 
+      // signature
       tmp = lines.get(i+1);
       tmp = tmp.replace("descriptor: ", "");
       method.signature = tmp.trim();
-      result.add(method);
+      method.hasArgs   = !method.signature.contains("()");
+      method.hasReturn = !method.signature.endsWith("V");
+
+      if ((m_SkipPattern != null) && m_SkipPattern.matcher(method.name).matches())
+        continue;
+      result.methods.add(method);
+    }
+
+    // determine properties
+    for (MethodDescriptor m: result.methods) {
+      if (!m.name.startsWith("set") || !m.signature.endsWith("V"))
+        continue;
+      tmp = "g" + m.name.substring(1);
+      for (MethodDescriptor m2: result.methods) {
+        if (m2.name.equals(tmp)) {
+          property = new PropertyDescriptor();
+          property.name  = m.name.substring(3, 4).toLowerCase() + m.name.substring(4);
+          property.write = m.name;
+          property.read  = m2.name;
+          result.properties.add(property);
+	}
+      }
     }
 
     return result;
@@ -271,7 +409,7 @@ public class Main {
   public String execute() {
     String			result;
     StringBuilder		output;
-    List<MethodDescriptor>	methods;
+    ClassDescriptor		parsed;
 
     result = check();
 
@@ -280,12 +418,12 @@ public class Main {
 
       for (String classname: m_Classes) {
 	System.out.println("Processing: " + classname);
-	methods = parseSignatures(classname);
-	if (methods == null)
+	parsed = parseSignatures(classname);
+	if (parsed == null)
 	  continue;
 
         // TODO
-	System.out.println(methods);
+	System.out.println(parsed);
       }
     }
 
@@ -325,6 +463,10 @@ public class Main {
       .required(true)
       .dest("output")
       .help("The Python output file.");
+    parser.addArgument("--skip")
+      .dest("skip")
+      .required(false)
+      .help("The regular expression for method names to skip.");
 
     try {
       ns = parser.parseArgs(options);
@@ -338,6 +480,7 @@ public class Main {
     setClassPath(ns.getString("classpath"));
     setClasses(ns.getList("classes"));
     setOutputFile(ns.get("output"));
+    setSkip(ns.get("skip"));
 
     return true;
   }
