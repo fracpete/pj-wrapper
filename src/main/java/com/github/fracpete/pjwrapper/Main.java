@@ -63,6 +63,9 @@ public class Main {
     /** whether it has a return value. */
     public boolean hasReturn;
 
+    /** whether the method is part of a property get/set pair. */
+    public boolean isProperty;
+
     /**
      * Returns a string representation of the container.
      *
@@ -393,6 +396,8 @@ public class Main {
           property.name  = m.name.substring(3, 4).toLowerCase() + m.name.substring(4);
           property.write = m.name;
           property.read  = m2.name;
+          m.isProperty   = true;
+          m2.isProperty  = true;
           result.properties.add(property);
 	}
       }
