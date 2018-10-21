@@ -20,6 +20,7 @@
 
 package com.github.fracpete.pjwrapper;
 
+import com.github.fracpete.processoutput4j.output.CollectingProcessOutput;
 import net.sourceforge.argparse4j.ArgumentParsers;
 import net.sourceforge.argparse4j.impl.Arguments;
 import net.sourceforge.argparse4j.inf.ArgumentParser;
@@ -28,6 +29,7 @@ import net.sourceforge.argparse4j.inf.Namespace;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -36,6 +38,27 @@ import java.util.List;
  * @author FracPete (fracpete at gmail dot com)
  */
 public class Main {
+
+  /**
+   * Container for the parsed javap output.
+   */
+  public class MethodDescriptor {
+
+    /** the name of the method. */
+    public String name;
+
+    /** the signature. */
+    public String signature;
+
+    /**
+     * Returns a string representation of the container.
+     *
+     * @return		the description
+     */
+    public String toString() {
+      return name + ": " + signature;
+    }
+  }
 
   /** the java home directory to use. */
   protected File m_JavaHome;
@@ -155,6 +178,114 @@ public class Main {
   }
 
   /**
+   * Executes javap and parses the output.
+   *
+   * @param classname	the class to process
+   * @return		the parsed output, null if failed to process
+   */
+  protected List<MethodDescriptor> getSignatures(String classname) {
+    List<MethodDescriptor>	result;
+    String[]			cmd;
+    ProcessBuilder 		builder;
+    CollectingProcessOutput 	output;
+    List<String>		lines;
+    int				i;
+    MethodDescriptor		method;
+    String			tmp;
+
+    cmd = new String[]{
+      m_Javap.getAbsolutePath(),
+      "-s",
+      "-public",
+      "-cp",
+      getClassPath(),
+      classname};
+    builder = new ProcessBuilder();
+    builder.command(cmd);
+    output = new CollectingProcessOutput();
+
+    try {
+      output.monitor(builder);
+    }
+    catch (Exception e) {
+      System.err.println("Failed to execute command: " + builder.command());
+      e.printStackTrace();
+      return null;
+    }
+
+    result = new ArrayList<>();
+    lines  = new ArrayList<>(Arrays.asList(output.getStdOut().split("\n")));
+
+    // clean up
+    i = 0;
+    while (i < lines.size()) {
+      if (lines.get(i).contains("Compiled from")) {
+        lines.remove(i);
+        continue;
+      }
+      if (lines.get(i).contains("{") || lines.get(i).contains("}")) {
+        lines.remove(i);
+        continue;
+      }
+      if (lines.get(i).trim().isEmpty()) {
+        lines.remove(i);
+        continue;
+      }
+      i++;
+    }
+
+    // create descriptors
+    for (i = 0; i < lines.size(); i += 2) {
+      method = new MethodDescriptor();
+
+      tmp = lines.get(i);
+      tmp = tmp.replace("public ", "");
+      tmp = tmp.replace("final ", "");
+      tmp = tmp.replace("static ", "");
+      tmp = tmp.replaceAll("\\(.*", "").trim();
+      if (!tmp.contains(" "))
+        method.name = tmp;  // constructor
+      else
+        method.name = tmp.split(" ")[1];
+
+      tmp = lines.get(i+1);
+      tmp = tmp.replace("descriptor: ", "");
+      method.signature = tmp.trim();
+      result.add(method);
+    }
+
+    return result;
+  }
+
+  /**
+   * Generates the code.
+   *
+   * @return		null if successful, otherwise error message
+   */
+  public String execute() {
+    String			result;
+    StringBuilder		output;
+    List<MethodDescriptor>	methods;
+
+    result = check();
+
+    if (result == null) {
+      output = new StringBuilder();
+
+      for (String classname: m_Classes) {
+	System.out.println("Processing: " + classname);
+	methods = getSignatures(classname);
+	if (methods == null)
+	  continue;
+	System.out.println(methods);
+      }
+    }
+    // TODO
+
+    return result;
+  }
+
+  /**
    * Parses the command-line options.
    *
    * @param options	the options
@@ -205,21 +336,6 @@ public class Main {
   }
 
   /**
-   * Generates the code.
-   *
-   * @return		null if successful, otherwise error message
-   */
-  public String execute() {
-    String result;
-
-    result = check();
-
-    // TODO
-
-    return result;
-  }
-
-  /**
    * Executes the tool from command-line.
    *
    * @param args	the command-line arguments, use -h/--help for help output
@@ -233,7 +349,7 @@ public class Main {
     if (main.setOptions(args)) {
       error = main.execute();
       if (error != null) {
-        System.err.println(error);
+	System.err.println(error);
 	System.exit(2);
       }
     }
