@@ -266,33 +266,6 @@ public class Main {
   }
 
   /**
-   * Executes javap and parses the output.
-   *
-   * @param classname	the class to process
-   * @return		the parsed output, null if failed to process
-   */
-  protected ClassDescriptor parseClass(String classname) {
-    Parser 	parser;
-
-    parser = new Parser(m_Javap, m_ClassPath, m_SkipPattern);
-    return parser.parse(classname);
-  }
-
-  /**
-   * Generates code for the parsed class.
-   *
-   * @param cls		the class to generate code for
-   * @param code	for storing the code
-   * @return		null if successful, otherwise error message
-   */
-  protected String generateCode(ClassDescriptor cls, StringBuilder code) {
-    Generator	generator;
-
-    generator = new Generator(m_PWW);
-    return generator.generate(cls, code);
-  }
-
-  /**
    * Outputs the generated code.
    *
    * @param code	the code to output
@@ -356,23 +329,27 @@ public class Main {
   public String execute() {
     String		result;
     StringBuilder 	code;
+    Parser 		parser;
     ClassDescriptor 	cls;
+    Generator		generator;
 
     result = check();
 
     if (result == null) {
-      code = new StringBuilder();
+      code      = new StringBuilder();
+      parser    = new Parser(m_Javap, m_ClassPath, m_SkipPattern);
+      generator = new Generator(m_PWW);
 
       for (String classname : m_Classes) {
 	if (getDebug())
 	  System.err.println("Processing: " + classname);
-	cls = parseClass(classname);
+	cls = parser.parse(classname);
 	if (cls == null)
 	  continue;
 	if (getDebug())
 	  System.err.println(cls);
 
-	result = generateCode(cls, code);
+	result = generator.generate(cls, code);
 	if (result != null)
 	  break;
       }
