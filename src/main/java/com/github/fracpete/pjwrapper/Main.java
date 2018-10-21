@@ -27,7 +27,9 @@ import net.sourceforge.argparse4j.inf.ArgumentParser;
 import net.sourceforge.argparse4j.inf.ArgumentParserException;
 import net.sourceforge.argparse4j.inf.Namespace;
 
+import java.io.BufferedWriter;
 import java.io.File;
+import java.io.FileWriter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -49,7 +51,7 @@ public class Main {
     public String name;
 
     /** whether it is the constructor. */
-    public boolean constructor;
+    public boolean isConstructor;
 
     /** whether the method is static. */
     public boolean isStatic;
@@ -72,7 +74,7 @@ public class Main {
      * @return		the description
      */
     public String toString() {
-      return name + ": " + signature + (constructor ? " (constructor)" : "") + (isStatic ? " [static]" : "");
+      return name + ": " + signature + (isConstructor ? " (constructor)" : "") + (isStatic ? " [static]" : "");
     }
   }
 
@@ -85,10 +87,10 @@ public class Main {
     public String name;
 
     /** the read method. */
-    public String read;
+    public MethodDescriptor read;
 
     /** the write method. */
-    public String write;
+    public MethodDescriptor write;
 
     /**
      * Returns a short description of the property.
@@ -96,7 +98,7 @@ public class Main {
      * @return		the description
      */
     public String toString() {
-      return name + ": read(" + read + "), write(" + write + ")";
+      return name + ": read(" + read.name + "), write(" + write.name + ")";
     }
   }
 
@@ -154,11 +156,20 @@ public class Main {
   /** the Python output file. */
   protected File m_OutputFile;
 
+  /** whether to append the file. */
+  protected boolean m_Append;
+
   /** the regular expression for skipping method names. */
   protected String m_Skip;
 
   /** the pattern for matching method names to skip. */
   protected Pattern m_SkipPattern;
+
+  /** whether to output some debugging information. */
+  protected boolean m_Debug;
+
+  /** whether to output python-weka-wrapper code. */
+  protected boolean m_PWW;
 
   /**
    * Initalizes the object.
@@ -168,8 +179,11 @@ public class Main {
     m_Classes     = new ArrayList<>();
     m_ClassPath   = null;
     m_OutputFile  = null;
+    m_Append      = false;
     m_Skip        = null;
     m_SkipPattern = null;
+    m_Debug       = false;
+    m_PWW         = false;
   }
 
   /**
@@ -245,6 +259,24 @@ public class Main {
   }
 
   /**
+   * Sets whether to append the output file.
+   *
+   * @param value	true if to append
+   */
+  public void setAppend(boolean value) {
+    m_Append = value;
+  }
+
+  /**
+   * Returns whether to append the output file
+   *
+   * @return		true if to append
+   */
+  public boolean getAppend() {
+    return m_Append;
+  }
+
+  /**
    * Sets the regular expression for methods to skip.
    *
    * @param value	the expression
@@ -260,6 +292,42 @@ public class Main {
    */
   public String getSkip() {
     return m_Skip;
+  }
+
+  /**
+   * Sets whether to turn debug information on.
+   *
+   * @param value	true for debug info
+   */
+  public void setDebug(boolean value) {
+    m_Debug = value;
+  }
+
+  /**
+   * Returns whether debug information is on.
+   *
+   * @return		true if debug is on
+   */
+  public boolean getDebug() {
+    return m_Debug;
+  }
+
+  /**
+   * Sets whether to output python-weka-wrapper code.
+   *
+   * @param value	true for pww code
+   */
+  public void setPWW(boolean value) {
+    m_PWW = value;
+  }
+
+  /**
+   * Returns whether to output python-weka-wrapper code.
+   *
+   * @return		true for pww code
+   */
+  public boolean getPWW() {
+    return m_PWW;
   }
 
   /**
@@ -301,7 +369,7 @@ public class Main {
    * @param classname	the class to process
    * @return		the parsed output, null if failed to process
    */
-  protected ClassDescriptor parseSignatures(String classname) {
+  protected ClassDescriptor parseClass(String classname) {
     ClassDescriptor		result;
     String[]			cmd;
     ProcessBuilder 		builder;
@@ -367,7 +435,7 @@ public class Main {
       tmp = tmp.replaceAll("\\(.*", "").trim();
       if (!tmp.contains(" ")) {
         method.name        = tmp;
-        method.constructor = true;
+        method.isConstructor = true;
       }
       else {
         method.name = tmp.split(" ")[1];
@@ -394,8 +462,8 @@ public class Main {
         if (m2.name.equals(tmp)) {
           property = new PropertyDescriptor();
           property.name  = m.name.substring(3, 4).toLowerCase() + m.name.substring(4);
-          property.write = m.name;
-          property.read  = m2.name;
+          property.write = m;
+          property.read  = m2;
           m.isProperty   = true;
           m2.isProperty  = true;
           result.properties.add(property);
@@ -407,29 +475,193 @@ public class Main {
   }
 
   /**
+   * Turns a Java camel case into a Python lower_underscore name.
+   *
+   * @param javaname	the name to convert
+   * @return		the converted name
+   */
+  protected String pythonName(String javaname) {
+    StringBuilder	result;
+    char		c;
+    int			i;
+
+    result = new StringBuilder();
+
+    for (i = 0; i < javaname.length(); i++) {
+      c = javaname.charAt(i);
+      if ((c >= 'A') && (c <= 'Z')) {
+        result.append("_");
+        c = Character.toLowerCase(c);
+      }
+      result.append(c);
+    }
+
+    return result.toString();
+  }
+
+  /**
+   * Generates code for the parsed class.
+   *
+   * @param cls		the class to generate code for
+   * @param code	for storing the code
+   * @return		null if successful, otherwise error message
+   */
+  protected String generateCode(ClassDescriptor cls, StringBuilder code) {
+    // imports
+    if (m_PWW && (code.length() == 0)) {
+      code.append("from weka.core.classes import JavaObject\n");
+      code.append("\n");
+      code.append("\n");
+    }
+
+    // class
+    code.append("class ").append(cls.name.replaceAll(".*\\.", ""));
+    if (m_PWW)
+      code.append("(JavaObject):\n");
+    else
+      code.append("(Object):\n");
+
+    // comments
+    code.append("    \"\"\"\n");
+    code.append("    classname: " + cls.name + "\n");
+    code.append("    classpath: " + m_ClassPath + "\n");
+    code.append("    \"\"\"\n");
+    code.append("    \n");
+
+    // constructor
+    if (m_PWW) {
+      code.append("    def __init__(self, jobject):\n");
+      code.append("        super(JavaObject, jobject)\n");
+      code.append("        \n");
+    }
+    else {
+      code.append("    def __init__(self, jobject):\n");
+      code.append("        self.jobject = jobject\n");
+      code.append("        \n");
+    }
+
+    // iterate methods
+    for (MethodDescriptor method: cls.methods) {
+      if (method.isConstructor || method.isProperty || method.isStatic)
+        continue;
+
+      code.append("    def ").append(pythonName(method.name)).append("(self):\n");  // TODO parameters
+      code.append("        \"\"\"\n");
+      code.append("        method: ").append(method.name).append(method.signature).append("\n");
+      code.append("        \"\"\"\n");
+      code.append("        pass\n");  // TODO set
+      code.append("        \n");
+    }
+
+    // iterate properties
+    for (PropertyDescriptor property: cls.properties) {
+      code.append("    @property\n");
+      code.append("    def ").append(pythonName(property.name)).append("(self):\n");
+      code.append("        \"\"\"\n");
+      code.append("        method: ").append(property.read.name).append(property.read.signature).append("\n");
+      code.append("        \"\"\"\n");
+      code.append("        return None\n");  // TODO return
+      code.append("        \n");
+
+      code.append("    @").append(pythonName(property.name)).append(".setter\n");
+      code.append("    def ").append(pythonName(property.name)).append("(self, value):\n");
+      code.append("        \"\"\"\n");
+      code.append("        method: ").append(property.write.name).append(property.write.signature).append("\n");
+      code.append("        \"\"\"\n");
+      code.append("        pass\n");  // TODO set
+      code.append("        \n");
+    }
+
+    return null;
+  }
+
+  /**
+   * Outputs the generated code.
+   *
+   * @param code	the code to output
+   * @return		null if successful, otherwise error message
+   */
+  protected String outputCode(StringBuilder code) {
+    String		msg;
+    BufferedWriter 	bwriter;
+    FileWriter		fwriter;
+
+    if (m_OutputFile == null) {
+      System.out.println(code.toString());
+      return null;
+    }
+    else {
+      if (getDebug())
+        System.err.println("Writing to '" + m_OutputFile + " (append=" + m_Append + ")");
+      fwriter = null;
+      bwriter = null;
+      try {
+        fwriter = new FileWriter(m_OutputFile, m_Append);
+        bwriter = new BufferedWriter(fwriter);
+        bwriter.write(code.toString());
+        bwriter.newLine();
+        bwriter.flush();
+        fwriter.flush();
+	return null;
+      }
+      catch (Exception e) {
+        msg = "Failed to write to '" + m_OutputFile + "' (append=" + m_Append + ")!";
+        System.err.println(msg);
+        e.printStackTrace();
+        return msg + "\n" + e;
+      }
+      finally {
+        if (bwriter != null) {
+	  try {
+	    bwriter.close();
+	  }
+	  catch (Exception e) {
+	    // ignored
+	  }
+	}
+        if (fwriter != null) {
+          try {
+            fwriter.close();
+	  }
+	  catch (Exception e) {
+            // ignored
+	  }
+	}
+      }
+    }
+  }
+
+  /**
    * Generates the code.
    *
    * @return		null if successful, otherwise error message
    */
   public String execute() {
-    String			result;
-    StringBuilder		output;
-    ClassDescriptor		parsed;
+    String		result;
+    StringBuilder 	code;
+    ClassDescriptor 	cls;
 
     result = check();
 
     if (result == null) {
-      output = new StringBuilder();
+      code = new StringBuilder();
 
-      for (String classname: m_Classes) {
-	System.out.println("Processing: " + classname);
-	parsed = parseSignatures(classname);
-	if (parsed == null)
+      for (String classname : m_Classes) {
+	if (getDebug())
+	  System.err.println("Processing: " + classname);
+	cls = parseClass(classname);
+	if (cls == null)
 	  continue;
+	if (getDebug())
+	  System.err.println(cls);
 
-        // TODO
-	System.out.println(parsed);
+	result = generateCode(cls, code);
+	if (result != null)
+	  break;
       }
+
+      if (result == null)
+	result = outputCode(code);
     }
 
     return result;
@@ -465,13 +697,28 @@ public class Main {
     parser.addArgument("--output")
       .type(Arguments.fileType())
       .setDefault(new File("."))
-      .required(true)
+      .required(false)
       .dest("output")
-      .help("The Python output file.");
+      .help("The Python file to write to; outputs to stdout if not specified.");
+    parser.addArgument("--append")
+      .dest("append")
+      .required(false)
+      .action(Arguments.storeTrue())
+      .help("If to append to the output file.");
     parser.addArgument("--skip")
       .dest("skip")
       .required(false)
       .help("The regular expression for method names to skip.");
+    parser.addArgument("--debug")
+      .dest("debug")
+      .required(false)
+      .action(Arguments.storeTrue())
+      .help("For outputting some debugging information.");
+    parser.addArgument("--pww")
+      .dest("pww")
+      .required(false)
+      .action(Arguments.storeTrue())
+      .help("For outputting python-weka-wrapper code.");
 
     try {
       ns = parser.parseArgs(options);
@@ -485,7 +732,10 @@ public class Main {
     setClassPath(ns.getString("classpath"));
     setClasses(ns.getList("classes"));
     setOutputFile(ns.get("output"));
+    setAppend(ns.get("append"));
     setSkip(ns.get("skip"));
+    setDebug(ns.get("debug"));
+    setPWW(ns.get("pww"));
 
     return true;
   }
